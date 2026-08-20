@@ -1,0 +1,49 @@
+{
+  "name": "manju-flow",
+  "version": "1.1.0",
+  "description": "漫剧一条龙（Manju Flow）：DSH 全功能插件，承接 shuangwen-novel 爽文小说创作管线 + 自研 H3 漫剧渲染引擎，一条龙直出「小说 → 视频」。Host：21 个 manju_* 工具 + manjuConsole Remote 服务；Client：侧栏「漫剧」多标签管理台（总览/监控/小说/项目/渲染/风格/设置）。零 NiliX 依赖，直连 ComfyUI + DeepSeek + FFmpeg。",
+  "type": "commonjs",
+  "main": "index.js",
+  "license": "MIT",
+  "author": "YiIimini",
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis",
+    "novel",
+    "manju",
+    "h3",
+    "minimax",
+    "comfyui",
+    "video",
+    "aigc",
+    "漫剧",
+    "小说"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YiIimini/manju-flow.git"
+  },
+  "bugs": {
+    "url": "https://github.com/YiIimini/manju-flow/issues"
+  },
+  "homepage": "https://github.com/YiIimini/manju-flow#readme",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-api-remotes"
+      ]
+    }
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  }
+}
