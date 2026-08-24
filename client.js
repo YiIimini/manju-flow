@@ -423,18 +423,31 @@ window.__ModuleLoader__.load({
 
 		// ── 插件主体 ──────────────────────────────────────────────────────────
 		async function apply(ctx) {
+			// ★ 按钮/面板注册不依赖 Remote $mount：即使 Host 侧 manjuConsole 未挂载，
+			//   按钮也必须出现（面板内对 Remote 调用做降级提示）。修复 2026-08-24：
+			//   此前 $mount 失败直接 return → 按钮永不注册 → 用户找不到入口。
+			const slots = ctx.get("slots");
+			if (slots === undefined) {
+				console.error("[manju-flow] slots 服务不可用，无法注册按钮");
+				return;
+			}
+
 			let api = null;
+			let mountError = "";
 			try {
 				const disposeMount = await ctx.remote.$mount({ package: "manju-flow", descriptors: DESCRIPTORS });
 				ctx.effect(() => disposeMount);
 				api = ctx.remote.manjuConsole;
 			} catch (e) {
-				console.error("[manju-flow] Remote $mount failed:", e);
+				mountError = String((e && e.message) || e);
+				console.error("[manju-flow] Remote $mount failed（按钮仍注册，面板降级）:", e);
 			}
-			if (!api) return;
-
-			const slots = ctx.get("slots");
-			if (slots === undefined) return;
+			// Remote 降级代理：未挂载时所有方法返回明确错误（面板 UI 仍可浏览）
+			if (!api) {
+				api = new Proxy({}, {
+					get: (t, m) => (typeof m === "string" ? async () => ({ ok: false, error: "Host manjuConsole 未挂载（$mount 失败" + (mountError ? ": " + mountError : "") + "）；请检查 Host 侧插件加载" }) : undefined),
+				});
+			}
 
 			let open = false;
 			const toggle = () => { open = !open; ctx.emit("manju.console.toggle") };
