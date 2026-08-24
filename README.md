@@ -4,11 +4,19 @@
 >
 > 用户只需说一句「写本爽文并渲染成视频」，即可自动完成：立项 → 设定集 → 并行写章 → QA 校验 → 封面 → 素材导出 → 全本 → 渲染方案 → 定妆照/场景图 → H3 逐镜渲染 → 质检 → 合成成片。
 
+**v1.2.0（2026-08-24）升级**：对齐 NiliX 2026-08-24 最新实现 + 知识库 H3 规范，核心升级：
+- **方案生成**：角色卡升级（`role` 阵营判定 + Q版纪律「仅正角」/ `views` 五视图 / 拟漫化 image_prompt / 面容独特性防跨剧撞脸 / 判停清单六类 / directing 防同质化五维 / 内心独白标记）
+- **逐镜 H3 提示词**：Ref2VA 多视图 Subject（同角色多视图多 Picture）、拟漫化锚句、输出体积硬约束（1500 tokens）、28 条写作规则（状态变化画之前/描述零数字/缺席否定句列全/构图权重之争/概念盲区/内心戏Q版化/动物禁人脸等）
+- **资产生成**：定妆固定 1024×1024（与画幅解耦）+ charSeed 稳定种子 + 五视图 img2img 保身份换视角 + Q版仅正角（反派/功能配角跳过）+ 场景强制空景无人+方形
+- **渲染**：★ ref_images 平铺键修复（旧数组会被 ComfyUI 静默忽略 → 参考图丢失）、多视图参考选择（单角色3视图/双角色2视图）、内心戏镜 Q 版参考优先、条件缓存带项目前缀防跨项目串用、FL2VA 空镜尾帧锚定（可选）
+- **质检**：亮度暗像素检测（黑屏兜底 >50% 判 FAIL）
+- **Host/Client**：gacha 视图抽卡（front/full/side/detail/q）、config/render-save 新增 fl2vaEndFrame、health 权重完整性检查（音频 VAE 缺失=黑屏根因）
+
 **零 NiliX 依赖**：渲染引擎完全自研，直连 ComfyUI(8190) 驱动 MiniMax H3 工作流 + DeepSeek(OpenAI 兼容) 出方案/提示词 + FFmpeg/ffprobe 本地合成/质检。
 
 ---
 
-## ✨ 功能全景（21 个 manju_* 工具）
+## ✨ 功能全景（22 个 manju_* 工具）
 
 ### M1 小说管线（shuangwen-novel 承接）
 | 工具 | 功能 |
@@ -30,7 +38,7 @@
 | `manju_render_status` | 状态轮询：run_state + 产物清单 + 方案摘要 + run.log 尾部 |
 | `manju_render_kill` | 停止任务：stopped 标记 + ComfyUI /interrupt |
 | `manju_render_comfy` | ComfyUI 管理：status / start / stop |
-| `manju_render_gacha` | 角色抽卡：draw 候选 / adopt 采纳 / upload 上传 / plan LLM 方案 |
+| `manju_render_gacha` | 角色抽卡：draw 候选 / adopt 采纳 / upload 上传 / plan LLM 方案（v1.2.0 支持视图 front/full/side/detail/q，Q版仅正角） |
 | `manju_render_qc` | 质检决策：decision 逃生门 / judge 单镜重审(ffprobe) / resolve 返工 |
 | `manju_render_agent` | 审片智能体：settings / status / style 分析 / chat 指令 |
 | `manju_render_post` | 后处理：trailer 预告片 / cleanup 清理 / cleanup-sizes |
@@ -60,22 +68,23 @@
 
 ```
 manju-flow-plugin/
-├── index.js          Host 半边：21 个 manju_* 工具 + manjuConsole Remote 服务
+├── index.js          Host 半边：22 个 manju_* 工具 + manjuConsole Remote 服务
 │                     （工具注册 / M1 小说域 / M2 渲染域 / M3 编排域 / M4 面板域）
 ├── engine.js         自研渲染引擎（零 NiliX）：
 │                     ComfyUI 直连(8190) / DeepSeek / FFmpeg / 工作流构建 /
-│                     方案生成 / 资产 / 逐镜渲染 / 合成质检 / 状态落盘
+│                     方案生成 / 资产（五视图）/ 逐镜渲染 / 合成质检 / 状态落盘
 ├── client.js         Client 半边：侧栏 🎬 按钮 + 7 标签管理台
 ├── cordis.patch.yml  DSH 插件注册补丁
 └── package.json      插件元数据
 ```
 
-### 引擎设计（对照 MiniMax H3 官方规范）
+### 引擎设计（对照 MiniMax H3 官方规范 + NiliX 2026-08-24 实战）
 - **H3 工作流**：FL2VA（空镜/三段式）/ Ref2VA（角色/六段式）双路径，`17k+5` 帧网格，Turbo LoRA 提速，MotionContext 接缝 latent 链
-- **方案生成**：DeepSeek 直出 角色/场景/分镜 + 逐镜完整 H3 提示词（素材注入：人物/场景提示词、设定集、封面）
-- **资产生成**：Z-Image 定妆照（写实）或 SDXL（动漫）+ 场景图，768×1344 竖屏
-- **合成质检**：FFmpeg concat + loudnorm + faststart；ffprobe 机械质检（时长/音视频流）
-- **状态管理**：run_state.json + run.log 本地落盘，断点续跑幂等
+- **方案生成**：DeepSeek 直出 角色（role 阵营/五视图/拟漫化 image_prompt）/场景/分镜（directing 防同质化五维 + 判停清单）+ 逐镜完整 H3 提示词（素材注入：人物/场景提示词、设定集、封面）
+- **资产生成**：定妆固定 1024×1024（与画幅解耦）+ charSeed 稳定种子；五视图 front/full/side/detail/q（Z-Image img2img 保身份换视角；Q版仅正角）；场景强制空景无人+方形
+- **逐镜提示词**：Ref2VA 六段式多视图 Subject、拟漫化锚句、输出体积硬约束（1500 tokens）、28 条写作规则（ai-film-skills 整合）
+- **合成质检**：FFmpeg concat + loudnorm + faststart；ffprobe 机械质检（时长/音视频流/亮度暗像素 >50% 判黑屏）
+- **状态管理**：run_state.json + run.log 本地落盘，断点续跑幂等；条件缓存带项目前缀防串用
 
 ### H3 合规（内建校验）
 - 短边 ≤768 且 32 倍数网格（draft 416 / standard 768 / fhd 1088）

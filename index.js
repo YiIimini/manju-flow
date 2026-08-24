@@ -577,7 +577,7 @@ module.exports = {
       return 'ffprobe'
     }
 
-    // 角色抽卡（自研本地：Z-Image 抽卡 / 采纳 / 上传；需 plan 已出角色）
+    // 角色抽卡（自研本地：Z-Image 抽卡 / 采纳 / 上传；需 plan 已出角色；2026-08-24 支持视图 + 拟漫化）
     async function localGacha(cfg, cfgPath, workdir, args) {
       const action = str(args.action).trim()
       const ep = str(args.episode, 'EP01')
@@ -585,17 +585,44 @@ module.exports = {
       const planPath = analysisDir + '/' + ep + '_direct_plan.json'
       if (!(await fexists(planPath))) return { ok: false, error: '方案不存在：先跑 plan' }
       const plan = JSON.parse(await fread(planPath))
-      const chars = (plan.characters || []).map((m) => ({ id: str(m.id), gender: str(m.gender), image_prompt: str(m.image_prompt), appearance: str(m.appearance), costume: str(m.costume) }))
+      const chars = (plan.characters || []).map((m) => ({ id: str(m.id), role: str(m.role), gender: str(m.gender), image_prompt: str(m.image_prompt), appearance: str(m.appearance), costume: str(m.costume), views: (m.views && typeof m.views === 'object') ? m.views : {} }))
       const render = Object.assign(engine.defaultRender(), cfg.render || {})
       const assetsDir = workdir + '/assets/characters'
       const comfy = engine.comfyClient(render.comfy_url || COM_URL_DEF)
+      const view = str(args.view, '').trim()
       if (action === 'draw') {
         const char = str(args.char).trim()
         const c = chars.find((x) => x.id === char)
         if (!c) return { ok: false, error: '角色不存在: ' + char + '；可选: ' + chars.map((x) => x.id).join(', ') }
         const sd = engine.styleDesc(str(cfg.style, 'real'))
-        const prompt = c.image_prompt || ('Cinematic film still, ' + sd.asset + ', character portrait of ' + c.appearance + ' wearing ' + c.costume + ', front-facing, 85mm lens, ultra detailed')
-        const wf = engine.wfZImage ? engine.wfZImage(prompt, render, Math.floor(Math.random() * 1e9), 768, 1024, 'manju_gacha', str(render.neg_prompt)) : null
+        // 视图抽卡：front/full/side/detail 基于主图 img2img 保身份；q 仅正角；空=主图拟漫化文生图
+        let prompt = c.image_prompt || ('Cinematic film still, ' + sd.asset + ', character portrait of ' + c.appearance + ' wearing ' + c.costume + ', front-facing, 85mm lens, ultra detailed')
+        if (view && view !== 'front' && view !== 'main') {
+          const vs = (c.views && typeof c.views === 'object') ? c.views : {}
+          prompt = str(vs[view]) || (prompt + ', ' + engine.viewSuffix(view))
+          if (view === 'q') {
+            if (c.role === '反派' || c.role === '功能配角') return { ok: false, error: 'Q 版仅限正角（2026-08-24 用户规则）：' + char + ' 的 role=' + (c.role || '未标记') }
+            const g = str(c.gender)
+            const genderEn = g === '女' ? ', a cute girl, feminine face, slender figure, wearing the character\'s outfit' : (g === '男' ? ', a cute boy, masculine face, broader figure, wearing the character\'s outfit' : '')
+            prompt = (str(vs.q) || 'chibi cute style, cute big eyes, small chibi body') + genderEn + ', ' + (c.image_prompt || '') + ', fully clothed, wearing the character\'s full costume from head to toe, no nudity, no shirtless, no topless, no underwear, no exposed skin except face and hands'
+          }
+        }
+        prompt = engine.portraitPrompt(prompt, c.appearance)
+        const seed = engine.charSeed(c.id, view || 'main')
+        // 视图抽卡：主图作 img2img 起点保身份（Z-Image 已验证）
+        let mainRef = ''
+        let strength = 0
+        if (view && view !== 'front' && view !== 'main') {
+          const mainImg = assetsDir + '/' + engine.safeName(char) + '.png'
+          if (await fexists(mainImg)) {
+            const comfyInputDir = normPath((cfg.paths && cfg.paths.comfy_input) || COM_INPUT_DEF)
+            const refName = 'dir_char_main_' + engine.safeName(char) + '.png'
+            if (!(await fexists(comfyInputDir + '/' + refName))) await engine.copyBinary(mainImg, comfyInputDir + '/' + refName)
+            mainRef = refName
+            strength = view === 'detail' ? 0.7 : (view === 'side' ? 0.85 : 0.82)
+          }
+        }
+        const wf = engine.wfZImage(prompt, render, seed, 1024, 1024, 'manju_gacha', str(render.neg_prompt), mainRef, strength)
         if (!wf) return { ok: false, error: '引擎 wfZImage 未导出（内部错误）' }
         const r = await comfy.submit(wf)
         if (!r.ok) return { ok: false, error: '抽卡提交失败: ' + r.error }
@@ -605,25 +632,27 @@ module.exports = {
         const media = comfy.outputFiles(entry).find((f) => /\.(png|jpg|jpeg|webp)$/i.test(f.filename))
         const f = await comfy.fetch(media, workdir + '/assets/characters/_gacha')
         if (!f.ok) return { ok: false, error: '取回失败: ' + f.error }
-        return { ok: true, action, char, candidate: f.path, note: '用 manju_render_gacha adopt 采纳（image=候选图路径）' }
+        return { ok: true, action, char, view: view || 'main', candidate: f.path, note: '用 manju_render_gacha adopt 采纳（image=候选图路径' + (view ? '，view=' + view : '') + '）' }
       }
       if (action === 'adopt') {
         const char = str(args.char).trim(); const image = str(args.image).trim()
         if (!char || !image) return { ok: false, error: '缺少 char / image（候选图绝对路径）' }
         if (!(await fexists(image))) return { ok: false, error: '文件不存在: ' + image }
-        const dst = assetsDir + '/' + engine.safeName(char) + '.png'
+        const v = view && view !== 'main' && view !== 'front' ? view : ''
+        const dst = assetsDir + '/' + engine.safeName(char) + (v ? '_' + v : '') + '.png'
         await engine.fmkdir(assetsDir)
         await engine.fcopy(image, dst)
-        return { ok: true, action, char, adopted: dst, note: '已采纳为正式定妆照；后续 render 将重新编码该角色镜头' }
+        return { ok: true, action, char, view: v || 'main', adopted: dst, note: '已采纳为正式' + (v || '主') + '视图定妆照；后续 render 将重新编码该角色镜头' }
       }
       if (action === 'upload') {
         const char = str(args.char).trim(); const image = str(args.image).trim()
         if (!char || !image) return { ok: false, error: '缺少 char / image（本地图片绝对路径，png/jpg/webp ≤20MB）' }
         if (!(await fexists(image))) return { ok: false, error: '文件不存在: ' + image }
-        const dst = assetsDir + '/' + engine.safeName(char) + '.png'
+        const v = view && view !== 'main' && view !== 'front' ? view : ''
+        const dst = assetsDir + '/' + engine.safeName(char) + (v ? '_' + v : '') + '.png'
         await engine.fmkdir(assetsDir)
         await engine.fcopy(image, dst)
-        return { ok: true, action, char, adopted: dst }
+        return { ok: true, action, char, view: v || 'main', adopted: dst }
       }
       if (action === 'plan') {
         // LLM 直出角色方案（补写 characters image_prompt）
@@ -664,6 +693,7 @@ module.exports = {
           animagine_ckpt: 'animagine-xl-3.1.safetensors',
           char_models: { 男: 'sd_xl_base_1.0.safetensors', 女: 'animagine-xl-3.1.safetensors' },
           chapters: '', episode: '0',
+          fl2va_end_frame: false,
         }
       },
       // 生成/更新 config.json（渲染参数保留已有值；仅显式传参覆盖；paths 强制）
@@ -701,7 +731,7 @@ module.exports = {
         if (rPatch.width !== undefined) rPatch.width = align32(rPatch.width)
         if (rPatch.height !== undefined) rPatch.height = align32(rPatch.height)
         for (const [camel, snake] of STR_MAP) if (has(args[camel])) rPatch[snake] = str(args[camel])
-        for (const [camel, snake] of [['sageAttention', 'sage_attention'], ['draftJudge', 'draft_judge']]) if (args[camel] !== undefined && args[camel] !== null) rPatch[snake] = !!args[camel]
+        for (const [camel, snake] of [['sageAttention', 'sage_attention'], ['draftJudge', 'draft_judge'], ['fl2vaEndFrame', 'fl2va_end_frame']]) if (args[camel] !== undefined && args[camel] !== null) rPatch[snake] = !!args[camel]
         if (args.draftScale !== undefined && args.draftScale !== null) rPatch.draft_scale = num(args.draftScale, 0.5)
         cfg = mergeObj(cfg, patch)
         cfg.llm = mergeObj(cfg.llm || {}, llmPatch)
@@ -750,6 +780,22 @@ module.exports = {
         let styleWarn = ''
         if (cfg.style) styleWarn = styleHint(cfg.style)
         checks.push({ key: 'style', name: '风格', passed: !styleWarn, message: str(styleWarn || cfg.style) })
+        // 权重完整性（2026-08-18 知识库：音频 VAE 缺失=黑屏最高频故障；int8 剪枝为工业化主力）
+        const sharedModels = normPath((cfg.paths && cfg.paths.comfy_shared) || (userProfile + '/AppData/Local/Comfy-Desktop/ComfyUI-Shared/models'))
+        const modelCheck = async (label, name) => {
+          if (!name) return null
+          const dirs = ['diffusion_models', 'text_encoders', 'vae', 'loras', 'unet', 'checkpoints', 'clip']
+          for (const d of dirs) {
+            if (await fexists(sharedModels + '/' + d + '/' + name)) return { key: 'model_' + label, name: label, passed: true, message: name }
+          }
+          return { key: 'model_' + label, name: label, passed: false, message: name + '（未在共享 models 找到；音频 VAE 缺失会黑屏）' }
+        }
+        if (cfg.render) {
+          for (const [label, key] of [['H3 Ref2VA UNET', 'unet_ref2va'], ['H3 FL2VA UNET', 'unet_fl2va'], ['CLIP', 'clip'], ['视频 VAE', 'vae_video'], ['音频 VAE', 'vae_audio'], ['Turbo LoRA', 'turbo_lora']]) {
+            const mc = await modelCheck(label, cfg.render[key])
+            if (mc) checks.push(mc)
+          }
+        }
         // fix：本地修复可修项
         const fixed = []
         if (args.fix) {
@@ -981,7 +1027,7 @@ module.exports = {
           if (!shot) return { ok: false, error: '缺少 shot（镜头号）' }
           const clip = workdir + '/clips/' + ep + '/' + String(shot).padStart(2, '0') + '.mp4'
           if (!(await fexists(clip))) return { ok: false, error: '镜头文件不存在: ' + clip + '（先跑 render）' }
-          // 本地 ffprobe 机械质检
+          // 本地 ffprobe 机械质检 + 亮度暗像素检测（黑屏兜底）
           const ff = await ffprobePath()
           const r = await engine.pwsh(`& '${ff}' -v error -show_entries stream=codec_type,codec_name -show_entries format=duration -of json '${clip}'`, { strict: true })
           let pr = {}
@@ -990,12 +1036,23 @@ module.exports = {
           try { duration = Number(parseFloat(pr.format && pr.format.duration)) } catch (e) { /* ignore */ }
           let hasVideo = false, hasAudio = false
           for (const s of (pr.streams || [])) { if (s.codec_type === 'video') hasVideo = true; if (s.codec_type === 'audio') hasAudio = true }
-          const passed = duration > 0 && hasVideo
-          return { ok: true, action, shot, clip, passed, checks: [
+          let darkPct = 0
+          if (hasVideo && duration > 0) {
+            try {
+              const r2 = await engine.pwsh(`& '${ff}' -v error -i '${clip}' -vf "fps=2,signalstats,metadata=print:key=lavfi.signalstats.YMIN" -frames:v 60 -f null NUL`, { timeoutMs: 180000 })
+              const lines = (r2.stdout || '').split(/\r?\n/)
+              let yminCount = 0, total = 0
+              for (const l of lines) { const m = l.match(/lavfi\.signalstats\.YMIN=(\d+)/); if (m) { total++; if (Number(m[1]) <= 16) yminCount++ } }
+              if (total > 0) darkPct = Math.round((yminCount / total) * 100)
+            } catch (e) { /* ignore */ }
+          }
+          const passed = duration > 0 && hasVideo && darkPct <= 50
+          return { ok: true, action, shot, clip, passed, darkPct, checks: [
             { name: '时长', passed: duration > 0, message: duration.toFixed(2) + 's' },
             { name: '视频流', passed: hasVideo },
             { name: '音频流', passed: hasAudio },
-          ], note: '本地机械质检（ffprobe）；VLM 判分需云端视觉模型，自研引擎暂用机械质检' }
+            { name: '亮度', passed: darkPct <= 50, message: darkPct + '% 暗像素' + (darkPct > 50 ? '（近黑帧，需返工或调亮度护栏）' : '') },
+          ], note: '本地机械质检（ffprobe + 亮度检测）；VLM 判分需云端视觉模型，自研引擎暂用机械质检' }
         }
         if (action === 'resolve') {
           const act = str(args.decision).trim()
@@ -1185,7 +1242,7 @@ module.exports = {
             if (args.height !== undefined && args.height !== null) cfg.render.height = align32(num(args.height, 1344))
             for (const [camel, snake] of [['fps', 'fps'], ['steps', 'steps'], ['turboSteps', 'turbo_steps'], ['seed', 'seed'], ['minShotSeconds', 'min_shot_seconds'], ['maxShotSeconds', 'max_shot_seconds'], ['shotsPerTake', 'shots_per_take']]) if (args[camel] !== undefined && args[camel] !== null) cfg.render[snake] = num(args[camel], 0)
             for (const [camel, snake] of STR_MAP) if (has(args[camel])) cfg.render[snake] = str(args[camel])
-            for (const [camel, snake] of [['sageAttention', 'sage_attention'], ['draftJudge', 'draft_judge']]) if (args[camel] !== undefined && args[camel] !== null) cfg.render[snake] = !!args[camel]
+            for (const [camel, snake] of [['sageAttention', 'sage_attention'], ['draftJudge', 'draft_judge'], ['fl2vaEndFrame', 'fl2va_end_frame']]) if (args[camel] !== undefined && args[camel] !== null) cfg.render[snake] = !!args[camel]
             if (args.draftScale !== undefined && args.draftScale !== null) cfg.render.draft_scale = num(args.draftScale, 0.5)
             await fwrite(cfgPath, JSON.stringify(cfg, null, 2))
             return { ok: true, action, project, config: cfgPath, h3Compliance: h3ComplianceOf(cfg.render) }
@@ -1347,18 +1404,18 @@ module.exports = {
       tool('manju_novel_materials', '素材导出（shuangwen-novel 阶段6 重构版）：从 设定集/设定集与大纲.md 抽取人物与场景，生成 素材/人物生成提示词.md 与 素材/场景提示词.md——按 NiliX scanNovelAssets 规格产出（CharPrompt/ScenePrompt 直接注入 plan 系统提示词）。覆盖前自动备份旧文件 .bak-*。返回缺英文提示词的角色清单。', { project: S('书名（必填）'), root: S('小说库根目录（默认自动解析）') }, ['project'], (a) => novel.materials(a)),
       tool('manju_novel_assemble', '全本合并：运行 assemble_full.py（按章号数字排序，防中文卷名乱序）生成 全本/<书名>·全本.md——NiliX config.paths.novel 的正文源。', { project: S('书名（必填）'), root: S('小说库根目录（默认自动解析）') }, ['project'], (a) => novel.assemble(a)),
       tool('manju_novel_web', 'NiliX 网页版小说创作（shuangwen-novel 流程固化，LLM 直出）：create 立项生成设定集与大纲（同步30-90s，幂等）/ chapter 逐章生成（≥1280字，幂等）/ review 评章（8维打分）/ analyze 策划分析 / progress 进度 / auto 后台自动连载 / auto-stop / auto-status / status-all。', { action: S('create|chapter|review|analyze|progress|auto|auto-stop|auto-status|status-all（必填）'), title: S('书名（create/chapter/review/progress/auto 用）'), genre: S('题材（create/analyze 用）'), style: S('风格（create/analyze 用）'), chapters: I('章数（create 用，默认 56，硬下限 52）'), no: I('章号（chapter/review 用）') }, ['action'], (a) => novel.web(a)),
-      tool('manju_render_config', '生成/更新漫剧项目 config.json（自研引擎，零 NiliX）：自动解析小说正文（优先 全本/<书名>·全本.md）、DeepSeek key（显式 > 项目已有 > server/settings.json）、manju 根目录、Comfy 目录；渲染参数保留项目已有值（仅显式传参覆盖）；宽高自动 32 倍数对齐（H3 VAE 网格）；返回 h3Compliance 合规摘要与风格提示。', { project: S('书名=剧名（必填）'), style: S('渲染风格：2.5d/real/3d/anime/handdrawn/papercraft/clay/ink 或 + 组合或英文自定义，默认 real'), width: I('宽（默认 768，自动对齐 32 倍数）'), height: I('高（默认 1344，自动对齐 32 倍数）'), fps: I('帧率（默认 24）'), steps: I('采样步数（默认 20）'), turboSteps: I('turbo 步数（默认 8）'), seed: I('种子（默认 1688）'), episode: S('默认集数：0=全本默认（默认）；N=第N章'), chapters: S('默认章节范围（空=全部）'), resTier: S('分辨率档位 draft|standard|fhd'), transition: S('转场 cut|fade|dissolve'), bgm: S('BGM 路径'), seedPolicy: S('seed 策略 fixed|increment|random'), sageAttention: B('SageAttention 加速'), draftJudge: B('草稿预审'), draftScale: S('草稿缩放 0.2-0.95'), turboLoraR2v: S('Ref2VA 专用 Turbo LoRA（默认同 turbo_lora）'), llmApiKey: S('DeepSeek key（默认读 server/settings.json）'), llmModel: S('LLM 模型（默认 deepseek-chat）'), manjuRoot: S('漫剧项目根目录（默认自动解析）'), novelRoot: S('小说库根目录（默认自动解析）') }, ['project'], (a) => render.config(a)),
+      tool('manju_render_config', '生成/更新漫剧项目 config.json（自研引擎，零 NiliX）：自动解析小说正文（优先 全本/<书名>·全本.md）、DeepSeek key（显式 > 项目已有 > server/settings.json）、manju 根目录、Comfy 目录；渲染参数保留项目已有值（仅显式传参覆盖）；宽高自动 32 倍数对齐（H3 VAE 网格）；返回 h3Compliance 合规摘要与风格提示。', { project: S('书名=剧名（必填）'), style: S('渲染风格：2.5d/real/3d/anime/handdrawn/papercraft/clay/ink 或 + 组合或英文自定义，默认 real'), width: I('宽（默认 768，自动对齐 32 倍数）'), height: I('高（默认 1344，自动对齐 32 倍数）'), fps: I('帧率（默认 24）'), steps: I('采样步数（默认 20）'), turboSteps: I('turbo 步数（默认 8）'), seed: I('种子（默认 1688）'), episode: S('默认集数：0=全本默认（默认）；N=第N章'), chapters: S('默认章节范围（空=全部）'), resTier: S('分辨率档位 draft|standard|fhd'), transition: S('转场 cut|fade|dissolve'), bgm: S('BGM 路径'), seedPolicy: S('seed 策略 fixed|increment|random'), sageAttention: B('SageAttention 加速'), draftJudge: B('草稿预审'), draftScale: S('草稿缩放 0.2-0.95'), turboLoraR2v: S('Ref2VA 专用 Turbo LoRA（默认同 turbo_lora）'), fl2vaEndFrame: B('空镜 FL2VA 尾帧锚定（默认关；开=场景图双帧防段尾漂移，成本翻倍）'), llmApiKey: S('DeepSeek key（默认读 server/settings.json）'), llmModel: S('LLM 模型（默认 deepseek-chat）'), manjuRoot: S('漫剧项目根目录（默认自动解析）'), novelRoot: S('小说库根目录（默认自动解析）') }, ['project'], (a) => render.config(a)),
       tool('manju_render_health', '平台可用性 + 项目体检（自研引擎：ComfyUI 直连检测 + 本地 config 体检/H3 合规/风格校验）。fix=true 本地一键修复（llm_key/h3 宽高）。ComfyUI 未运行返回 platform=down。', { project: S('剧名（可空=仅平台检测）'), fix: B('一键修复体检项'), key: S('指定修复项 key（留空=全部可修复项）'), manjuRoot: S('漫剧项目根目录（默认自动解析）') }, [], (a) => render.health(a)),
       tool('manju_render_run', '执行渲染阶段（自研引擎本地异步：plan 方案 / assets 资产 / encode 预编码(并入 render) / render 逐镜 H3 / qc 质检 / assemble 合成 / all 一条龙。直连 ComfyUI+DeepSeek，零 NiliX；异步启动立即返回，用 manju_render_status 轮询）。', { project: S('剧名（必填）'), phase: S('plan|assets|encode|render|qc|assemble|all（必填）'), episode: I('集数：0=全本默认（用 config）；N=第N章=第N集'), only: S('定点镜头，逗号分隔，如 1,2（仅 render/qc 有效）'), fresh: B('重跑：清空旧产物'), agent: B('AI 一条龙（自研引擎暂以本地机械质检代替 VLM 判分）'), manjuRoot: S('漫剧项目根目录（默认自动解析）') }, ['project', 'phase'], (a) => render.run(a)),
       tool('manju_render_status', '轮询渲染状态（自研引擎本地：run_state.json 的 running/stage/shot 进度 + clips 产物清单 + 方案摘要 + run.log 尾部）。渲染阶段每几分钟调一次。', { project: S('剧名（必填）'), tailLines: I('run.log 尾部行数（默认 30）'), manjuRoot: S('漫剧项目根目录（默认自动解析）') }, ['project'], (a) => render.status(a)),
       tool('manju_render_post', '渲染后处理：upscale2k 云端2K升级（0.8元/秒，先 estimate 看费用）/ jianying 剪映草稿导出 / trailer 预告片（默认30s）/ cleanup 清理抽卡候选与临时产物 / cleanup-sizes 各目录占用。', { project: S('剧名（必填）'), action: S('upscale2k|upscale2k-estimate|jianying|trailer|cleanup|cleanup-sizes（必填）'), episode: S('集号（默认 EP01）'), shots: S('upscale 定点镜头，逗号分隔'), target: I('预告片秒数 10-120（默认 30）'), targets: S('cleanup 目标，逗号分隔 gacha,frames,2k'), manjuRoot: S('漫剧项目根目录（默认自动解析）') }, ['project', 'action'], (a) => render.post(a)),
       tool('manju_render_kill', '停止当前渲染任务（自研引擎：置 stopped 标记 + ComfyUI /interrupt，纯本地）。', { project: S('剧名（必填）'), manjuRoot: S('漫剧项目根目录（默认自动解析）') }, ['project'], (a) => render.kill(a)),
       tool('manju_render_comfy', 'ComfyUI 管理：status 状态 / start 启动（自动等待就绪）/ stop 停止 / install 一键安装 / install-status 安装进度 / install-stop 停止安装。渲染前置保障。', { action: S('status|start|stop|install|install-status|install-stop（必填）') }, ['action'], (a) => render.comfy(a)),
-      tool('manju_render_gacha', '角色抽卡（定妆照换装）：draw 随机生成候选（需 plan 已出角色）/ adopt 采纳候选为正式定妆照（覆盖→指纹失效→自动重渲）/ upload 上传图片直接采纳（本地路径）/ plan LLM 直出角色方案。', { project: S('剧名（必填）'), action: S('draw|adopt|upload|plan（必填）'), char: S('角色名（须在方案 characters 中）'), image: S('本地图片绝对路径（adopt 候选图 / upload 上传图，png/jpg/webp ≤20MB）'), chapters: S('章节范围（plan 用）'), episode: S('集号（默认 EP01）'), shots: S('镜头筛选（plan 用）'), manjuRoot: S('漫剧项目根目录（默认自动解析）') }, ['project', 'action'], (a) => render.gacha(a)),
+      tool('manju_render_gacha', '角色抽卡（定妆照换装，2026-08-24 支持视图）：draw 随机生成候选（需 plan 已出角色；view=front/full/side/detail/q，空=主图；q 仅正角）/ adopt 采纳候选为正式定妆照（覆盖→指纹失效→自动重渲）/ upload 上传图片直接采纳（本地路径）/ plan LLM 直出角色方案。', { project: S('剧名（必填）'), action: S('draw|adopt|upload|plan（必填）'), char: S('角色名（须在方案 characters 中）'), view: S('视图：front/full/side/detail/q（draw/adopt/upload 用；空=主视图；q 仅正角）'), image: S('本地图片绝对路径（adopt 候选图 / upload 上传图，png/jpg/webp ≤20MB）'), chapters: S('章节范围（plan 用）'), episode: S('集号（默认 EP01）'), shots: S('镜头筛选（plan 用）'), manjuRoot: S('漫剧项目根目录（默认自动解析）') }, ['project', 'action'], (a) => render.gacha(a)),
       tool('manju_render_qc', '质检决策与重审：decision 逃生门（skip=跳过失败镜并续跑，accept=接受坏镜进成片；直接写 config.render） / judge 单镜手动重审（VLM 判分）/ resolve 升级例外处理（retry 定点返工 | ignore 接受现状）。', { project: S('剧名（必填）'), action: S('decision|judge|resolve（必填）'), skip: S('decision: 跳过镜头号逗号分隔，如 3,7'), accept: B('decision: 接受质检结果（失败不阻断）'), shot: I('judge/resolve: 镜头号'), decision: S('resolve: retry|ignore'), episode: S('集号（默认 EP01）'), manjuRoot: S('漫剧项目根目录（默认自动解析）') }, ['project', 'action'], (a) => render.qc(a)),
       tool('manju_render_agent', 'AI 智能体管理：settings 配置视觉判分模型（enabled/visionBaseUrl/visionApiKey/visionModel/passScore/maxRetries/judgeConcurrency/autoResolve/minimaxApiKey；global=true 存全局默认）/ status 审片状态与配置 / vision-test 视觉模型连通测试 / style 深度分析推荐风格 / chat 自然语言指令。', { project: S('剧名（必填）'), action: S('settings|status|vision-test|style|chat（必填）'), enabled: B('settings: 启用智能体'), visionBaseUrl: S('settings: 视觉模型地址'), visionApiKey: S('settings: 视觉模型 Key'), visionModel: S('settings: 视觉模型名'), passScore: S('settings: 及格线 0-100'), maxRetries: I('settings: 返工轮数 0-4'), judgeConcurrency: I('settings: 判分并发 1-4'), autoResolve: B('settings: 预算耗尽自动拍板'), minimaxApiKey: S('settings: 云端2K Key'), global: B('settings: true=另存为全局默认'), text: S('chat: 自然语言指令（如“分析当前项目并给出下一步”）'), chapters: S('style: 章节范围'), novel: S('style: 小说路径覆盖'), episode: S('style: 集号'), manjuRoot: S('漫剧项目根目录（默认自动解析）') }, ['project', 'action'], (a) => render.agent(a)),
       tool('manju_render_notify', '通知配置：get 读取 / set 设置（channel=serverchan|pushplus|wecom|wxpusher|custom；enabled/endpoint/token/uid）/ test 发送测试消息。渲染完成/失败推送。', { action: S('get|set|test（必填）'), channel: S('set: 渠道 serverchan|pushplus|wecom|wxpusher|custom'), enabled: B('set: 启用通知'), endpoint: S('set: 自定义 endpoint（wecom/custom 用）'), token: S('set: 渠道 token/secret'), uid: S('set: wxpusher UID（逗号分隔）'), message: S('test: 测试消息内容') }, ['action'], (a) => render.notify(a)),
-      tool('manju_render_manage', 'NiliX 项目与设置管理：projects 项目列表 / find 按小说查项目 / create 建项目（name+novel+apiKey）/ delete 删项目 / project 项目配置 / settings 默认Key·服务 / settings-set 保存默认Key·服务 / paths 部署路径生效值 / paths-post 保存部署路径 / skill-update 更新小说技能 / render-save 保存渲染配置 / novel-save 粘贴正文存 .md / novel-info 小说章节统计 / env 环境自检 / models 模型候选 / output-delete 删产物（file|episode）。', { action: S('projects|find|create|delete|project|settings|settings-set|paths|paths-post|skill-update|render-save|novel-save|novel-info|env|models|output-delete（必填）'), project: S('剧名（大部分 action 需要）'), name: S('create: 剧名'), novel: S('create/find/novel-info: 小说路径'), apiKey: S('create/settings-set: DeepSeek key'), baseUrl: S('settings-set: 默认服务地址'), model: S('settings-set: 默认模型'), clear: S('settings-set: 清除=1'), manjuRootPost: S('paths-post: manju 根目录'), novelRootPost: S('paths-post: novel 根目录'), comfyRootPost: S('paths-post: Comfy 安装目录'), comfySharedPost: S('paths-post: Comfy 共享目录'), novelSkillPost: S('paths-post: 技能目录'), comfyOutputPost: S('paths-post: Comfy 成品输出目录'), text: S('novel-save: 小说正文'), title: S('novel-save: 标题'), style: S('render-save: 风格'), scope: S('output-delete: file|episode'), path: S('output-delete file: 文件绝对路径（须在项目 workdir 内）'), width: I('render-save: 宽'), height: I('render-save: 高'), fps: I('render-save: 帧率'), steps: I('render-save: 步数'), turboSteps: I('render-save: turbo 步数'), seed: I('render-save: 种子'), minShotSeconds: I('render-save: 最短镜头秒'), maxShotSeconds: I('render-save: 最长镜头秒'), shotsPerTake: I('render-save: 每镜切点数 1-3'), comfyUrl: S('render-save: Comfy 地址'), negPrompt: S('render-save: 负面提示词'), unetFl2va: S('render-save: FL2VA UNET'), unetRef2va: S('render-save: Ref2VA UNET'), clip: S('render-save: CLIP'), vaeVideo: S('render-save: 视频 VAE'), vaeAudio: S('render-save: 音频 VAE'), zImageUnet: S('render-save: Z-Image UNET'), zImageClip: S('render-save: Z-Image CLIP'), zImageVae: S('render-save: Z-Image VAE'), turboLora: S('render-save: Turbo LoRA'), turboLoraR2v: S('render-save: Ref2VA 专用 Turbo LoRA'), animagineCkpt: S('render-save: SDXL checkpoint'), resTier: S('render-save: 分辨率档位'), transition: S('render-save: 转场'), bgm: S('render-save: BGM'), seedPolicy: S('render-save: seed 策略'), sageAttention: B('render-save: SageAttention'), draftJudge: B('render-save: 草稿预审'), draftScale: S('render-save: 草稿缩放 0.2-0.95'), episode: S('output-delete episode / 集号'), manjuRoot: S('漫剧项目根目录（默认自动解析）') }, ['action'], (a) => render.manage(a)),
+      tool('manju_render_manage', 'NiliX 项目与设置管理：projects 项目列表 / find 按小说查项目 / create 建项目（name+novel+apiKey）/ delete 删项目 / project 项目配置 / settings 默认Key·服务 / settings-set 保存默认Key·服务 / paths 部署路径生效值 / paths-post 保存部署路径 / skill-update 更新小说技能 / render-save 保存渲染配置 / novel-save 粘贴正文存 .md / novel-info 小说章节统计 / env 环境自检 / models 模型候选 / output-delete 删产物（file|episode）。', { action: S('projects|find|create|delete|project|settings|settings-set|paths|paths-post|skill-update|render-save|novel-save|novel-info|env|models|output-delete（必填）'), project: S('剧名（大部分 action 需要）'), name: S('create: 剧名'), novel: S('create/find/novel-info: 小说路径'), apiKey: S('create/settings-set: DeepSeek key'), baseUrl: S('settings-set: 默认服务地址'), model: S('settings-set: 默认模型'), clear: S('settings-set: 清除=1'), manjuRootPost: S('paths-post: manju 根目录'), novelRootPost: S('paths-post: novel 根目录'), comfyRootPost: S('paths-post: Comfy 安装目录'), comfySharedPost: S('paths-post: Comfy 共享目录'), novelSkillPost: S('paths-post: 技能目录'), comfyOutputPost: S('paths-post: Comfy 成品输出目录'), text: S('novel-save: 小说正文'), title: S('novel-save: 标题'), style: S('render-save: 风格'), scope: S('output-delete: file|episode'), path: S('output-delete file: 文件绝对路径（须在项目 workdir 内）'), width: I('render-save: 宽'), height: I('render-save: 高'), fps: I('render-save: 帧率'), steps: I('render-save: 步数'), turboSteps: I('render-save: turbo 步数'), seed: I('render-save: 种子'), minShotSeconds: I('render-save: 最短镜头秒'), maxShotSeconds: I('render-save: 最长镜头秒'), shotsPerTake: I('render-save: 每镜切点数 1-3'), comfyUrl: S('render-save: Comfy 地址'), negPrompt: S('render-save: 负面提示词'), fl2vaEndFrame: B('render-save: 空镜 FL2VA 尾帧锚定'), unetFl2va: S('render-save: FL2VA UNET'), unetRef2va: S('render-save: Ref2VA UNET'), clip: S('render-save: CLIP'), vaeVideo: S('render-save: 视频 VAE'), vaeAudio: S('render-save: 音频 VAE'), zImageUnet: S('render-save: Z-Image UNET'), zImageClip: S('render-save: Z-Image CLIP'), zImageVae: S('render-save: Z-Image VAE'), turboLora: S('render-save: Turbo LoRA'), turboLoraR2v: S('render-save: Ref2VA 专用 Turbo LoRA'), animagineCkpt: S('render-save: SDXL checkpoint'), resTier: S('render-save: 分辨率档位'), transition: S('render-save: 转场'), bgm: S('render-save: BGM'), seedPolicy: S('render-save: seed 策略'), sageAttention: B('render-save: SageAttention'), draftJudge: B('render-save: 草稿预审'), draftScale: S('render-save: 草稿缩放 0.2-0.95'), episode: S('output-delete episode / 集号'), manjuRoot: S('漫剧项目根目录（默认自动解析）') }, ['action'], (a) => render.manage(a)),
       tool('manju_render_script', '剧本生成（NiliX storyboard 一集视频脚本）：generate 输入小说路径+风格生成一集脚本 / styles 可选风格列表。注：主渲染管线为 manju，本工具供剧本预览/诊断。', { action: S('generate|styles（必填）'), novel: S('generate: 小说路径'), style: S('generate: 风格（可空）') }, ['action'], (a) => render.script(a)),
       tool('manju_render_jobs', '旧渲染任务（只读诊断，主管线为 manju）：list 任务列表 / status 单任务状态（id）/ outputs 成品列表。', { action: S('list|status|outputs（必填）'), id: S('status: 任务 id') }, ['action'], (a) => render.renderJobs(a)),
       tool('manju_pipeline_plan', '生成「小说→视频」整条流水线的执行计划：依赖有序步骤清单（每步标注模块/工具/参数/说明）。target=video 全流程；novel 只到小说；render 只走渲染。按 steps 逐条执行即完成一条龙直出。', { project: S('书名/剧名'), target: S('video|novel|render（默认 video）'), genre: S('题材'), style: S('风格'), chapters: I('章节数（默认 56）') }, [], (a) => pipeline.plan(a)),

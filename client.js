@@ -51,8 +51,8 @@ window.__ModuleLoader__.load({
 		function ConsolePanel({ api, ctx }) {
 			const [state, setState] = React.useState({ platform: null, projects: [], project: "", status: null, busy: false, msg: "", tab: "总览", comfyInfo: null, env: null, plan: null });
 			const [create, setCreate] = React.useState({ open: false, name: "", novel: "", apiKey: "" });
-			const [configForm, setConfigForm] = React.useState({ style: "real", width: 768, height: 1344, fps: 24, steps: 20, turboSteps: 8, seed: 1688 });
-			const [gacha, setGacha] = React.useState({ char: "" });
+			const [configForm, setConfigForm] = React.useState({ style: "real", width: 768, height: 1344, fps: 24, steps: 20, turboSteps: 8, seed: 1688, fl2vaEndFrame: false });
+			const [gacha, setGacha] = React.useState({ char: "", view: "" });
 			const [qc, setQc] = React.useState({ shot: "", skip: "" });
 			const [chat, setChat] = React.useState({ text: "" });
 			const [novelInfo, setNovelInfo] = React.useState(null);
@@ -252,6 +252,7 @@ window.__ModuleLoader__.load({
 									action: "render-save",
 									style: configForm.style, width: Number(configForm.width), height: Number(configForm.height),
 									fps: Number(configForm.fps), steps: Number(configForm.steps), turboSteps: Number(configForm.turboSteps), seed: Number(configForm.seed),
+									fl2vaEndFrame: !!configForm.fl2vaEndFrame,
 								}, "渲染配置已保存（服务端校验）") }),
 								Btn(state, "🗑 删除项目", { disabled: !state.project, onClick: () => { if (confirm("确认删除项目 " + state.project + "？")) act("manage", { action: "delete" }, "项目已删除") } }),
 							),
@@ -272,6 +273,11 @@ window.__ModuleLoader__.load({
 								Input(String(configForm.turboSteps), (v) => setConfigForm(Object.assign({}, configForm, { turboSteps: v })), "8", { width: 44 }),
 								h("span", { style: label }, "seed："),
 								Input(String(configForm.seed), (v) => setConfigForm(Object.assign({}, configForm, { seed: v })), "1688", { width: 70 }),
+							),
+							h("div", { style: row },
+								h("label", { style: Object.assign({}, label, { display: "flex", alignItems: "center", gap: 4 }) },
+									h("input", { type: "checkbox", checked: !!configForm.fl2vaEndFrame, onChange: (e) => setConfigForm(Object.assign({}, configForm, { fl2vaEndFrame: e.target.checked })) }),
+									"FL2VA 尾帧锚定（空镜防段尾漂移，成本翻倍）"),
 							),
 						)),
 						Card("ComfyUI 管理", h("div", { style: row },
@@ -311,10 +317,16 @@ window.__ModuleLoader__.load({
 						Card("角色抽卡", h("div", null,
 							h("div", { style: row },
 								h("span", { style: label }, "角色："),
-								Input(gacha.char, (v) => setGacha({ char: v }), "角色名", { width: 90 }),
-								Btn(state, "🎴 抽卡", { disabled: !gacha.char, onClick: () => act("gacha", { action: "draw", char: gacha.char }, "已请求抽卡") }),
+								Input(gacha.char, (v) => setGacha({ char: v, view: gacha.view }), "角色名", { width: 90 }),
+								h("span", { style: label }, "视图："),
+								h("select", { value: gacha.view, onChange: (e) => setGacha({ char: gacha.char, view: e.target.value }), style: Object.assign({}, input, { width: 76 }) },
+									["", "front", "full", "side", "detail", "q"].map((v) => h("option", { key: v, value: v }, v || "主图"))),
+								Btn(state, "🎴 抽卡", { disabled: !gacha.char, onClick: () => act("gacha", { action: "draw", char: gacha.char, view: gacha.view || undefined }, "已请求抽卡") }),
 								Btn(state, "角色方案", { onClick: () => act("gacha", { action: "plan" }, "已请求角色方案") }),
-								Btn(state, "📤 上传采纳", { disabled: !gacha.char, onClick: () => act("gacha", { action: "upload", char: gacha.char, image: prompt("本地图片绝对路径：") || "" }, "") }),
+								Btn(state, "📤 上传采纳", { disabled: !gacha.char, onClick: () => act("gacha", { action: "upload", char: gacha.char, view: gacha.view || undefined, image: prompt("本地图片绝对路径：") || "" }, "") }),
+							),
+							h("div", { style: Object.assign({}, row, { fontSize: 11, color: "#888" }) },
+								"视图：front=正脸特写 / full=全身 / side=侧面 / detail=细节 / q=Q版（仅正角）。视图基于主图 img2img 保身份（2026-08-24）。",
 							),
 						)),
 						Card("质检", h("div", null,

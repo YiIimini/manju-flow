@@ -1,7 +1,7 @@
 {
   "name": "manju-flow",
-  "version": "1.1.0",
-  "description": "漫剧一条龙（Manju Flow）：DSH 全功能插件，承接 shuangwen-novel 爽文小说创作管线 + 自研 H3 漫剧渲染引擎，一条龙直出「小说 → 视频」。Host：21 个 manju_* 工具 + manjuConsole Remote 服务；Client：侧栏「漫剧」多标签管理台（总览/监控/小说/项目/渲染/风格/设置）。零 NiliX 依赖，直连 ComfyUI + DeepSeek + FFmpeg。",
+  "version": "1.2.0",
+  "description": "漫剧一条龙（Manju Flow）：DSH 全功能插件，承接 shuangwen-novel 爽文小说创作管线 + 自研 H3 漫剧渲染引擎，一条龙直出「小说 → 视频」。Host：22 个 manju_* 工具 + manjuConsole Remote 服务；Client：侧栏「漫剧」多标签管理台（总览/监控/小说/项目/渲染/风格/设置）。v1.2.0：对齐 NiliX 2026-08-24 最新——方案角色卡升级（role 阵营/Q版纪律/五视图 views/拟漫化 image_prompt/面容独特性/判停清单/directing 防同质化）、逐镜提示词 28 条写作规则 + 输出体积硬约束、定妆 1024² 固定 + 五视图 img2img 保身份 + Q版仅正角、ref_images 平铺键修复、缓存项目前缀、质检亮度检测。零 NiliX 依赖，直连 ComfyUI + DeepSeek + FFmpeg。",
   "type": "commonjs",
   "main": "index.js",
   "license": "MIT",
