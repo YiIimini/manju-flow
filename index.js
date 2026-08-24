@@ -1466,6 +1466,13 @@ module.exports = {
 
     // typert contribution：Client 端 $mount 的 descriptors 必须与本清单一致
     //（id 全局唯一；namespace/method 即 gateway endpoint <ns>/<method>）
+    // ★ 2026-08-24 修复：codec 必须 mode:"strict" + typeSymbol + schema.parse——
+    //   旧格式 { mode:'src-json' } 被 client api-gateway requireStrictCodec 拒绝 →
+    //   $mount 失败 → 面板 Remote 调用全部降级。schema 用 passthrough（语义=JSON 透传，
+    //   api-gateway 只调用 codec.schema.parse(value)）。
+    const passthrough = (typeSymbol) => ({ parse(value) { return value }, _schemaType: typeSymbol })
+    const ARGS_SCHEMA = passthrough('manju-flow#manjuConsole/args')
+    const ANY_SCHEMA = passthrough('any')
     const INVOCATIONS = []
     const INV_METHODS = ['platform', 'projects', 'status', 'health', 'config', 'run', 'kill', 'post', 'comfy', 'create', 'gacha', 'qc', 'agent', 'notify', 'manage', 'plan']
     for (const m of INV_METHODS) {
@@ -1475,8 +1482,11 @@ module.exports = {
         namespace: 'manjuConsole',
         method: m,
         invocation: { kind: 'direct' },
-        parameters: (m === 'platform' || m === 'projects') ? [] : [{ name: 'args', wire: 'args', source: 'json', codec: { mode: 'src-json' } }],
-        result: { mode: 'src-json' },
+        parameters: (m === 'platform' || m === 'projects') ? [] : [{
+          name: 'args', wire: 'args', source: 'json',
+          codec: { mode: 'strict', typeSymbol: 'manju-flow#manjuConsole/args', schema: ARGS_SCHEMA },
+        }],
+        result: { mode: 'strict', typeSymbol: 'manju-flow#manjuConsole/' + m + ':result', schema: ANY_SCHEMA },
       })
     }
     const typertSvc = ctx.get('typert')

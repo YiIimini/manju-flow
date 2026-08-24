@@ -12,7 +12,21 @@ window.__ModuleLoader__.load({
 		var ReactDOM = require("react-dom");
 
 		// ── Remote 装配描述（与 index.js M4 INVOCATIONS 一致）──────────────────
-		const PARAM_ARGS = [{ name: "args", wire: "args", source: "json", codec: { mode: "src-json" } }];
+		// ★ 2026-08-24 修复：codec 必须 mode:"strict" + typeSymbol + schema.parse——
+		//   旧格式 { mode:'src-json' } 被 api-gateway requireStrictCodec 拒绝 → $mount 失败。
+		//   ★ client 模块表无 zod（require 会抛 "missed the module table"）→ 用最小
+		//     passthrough parser 替代（api-gateway 只调用 codec.schema.parse(value)，
+		//     语义 = JSON 透传，与 src-json 等价但满足 strict 校验）。
+		var passthrough = (typeSymbol) => ({
+			parse(value) { return value; },
+			_schemaType: typeSymbol,
+		});
+		var ARGS_SCHEMA = passthrough("manju-flow#manjuConsole/args");
+		var ANY_SCHEMA = passthrough("any");
+		const PARAM_ARGS = [{
+			name: "args", wire: "args", source: "json",
+			codec: { mode: "strict", typeSymbol: "manju-flow#manjuConsole/args", schema: ARGS_SCHEMA },
+		}];
 		const DESCRIPTORS = [
 			"platform", "projects", "status", "health", "config", "run", "kill", "post",
 			"comfy", "create", "gacha", "qc", "agent", "notify", "manage", "plan"
@@ -23,9 +37,13 @@ window.__ModuleLoader__.load({
 			method: m,
 			invocation: { kind: "direct" },
 			parameters: (m === "platform" || m === "projects") ? [] : PARAM_ARGS,
-			result: { mode: "src-json" }
+			result: { mode: "strict", typeSymbol: "manju-flow#manjuConsole/" + m + ":result", schema: ANY_SCHEMA },
 		}));
 
+		// ★ 2026-08-24 修复：不能 inject "remote.manjuConsole"——namespace 服务在
+		//   $mount 异步挂载后才提供，inject 声明会导致插件激活永久等待
+		//   （"pending: waiting for service: remote.manjuConsole"）。
+		//   $mount 后用 ctx.get('remote.manjuConsole') 惰性取（Cordis 点路径服务解析）。
 		const inject = ["slots", "remote"];
 
 		// ── 样式常量 ──────────────────────────────────────────────────────────
@@ -41,7 +59,9 @@ window.__ModuleLoader__.load({
 		const cardStyle = { background: "#ffffff0a", border: "1px solid #ffffff14", borderRadius: 6, padding: 8, marginBottom: 8 };
 
 		// ── 小工具 ────────────────────────────────────────────────────────────
-		const h = (type, props, children) => React.createElement(type, props, children);
+		// ★ 修复 2026-08-24：h 必须透传全部 children——旧签名 (type, props, children)
+		//   只取第一个子元素，多个 children（如头部4个子节点）被静默丢弃 → 面板空白。
+		const h = (type, props, ...children) => React.createElement(type, props, ...children);
 		const Btn = (p, label, extra) => h("button", Object.assign({ style: btn, disabled: p.busy }, extra || {}), label);
 		const Input = (value, onChange, placeholder, style) => h("input", { value, onChange: (e) => onChange(e.target.value), placeholder, style: Object.assign({}, input, style || {}) });
 		const Card = (title, children) => h("div", { style: cardStyle },
@@ -442,7 +462,10 @@ window.__ModuleLoader__.load({
 			try {
 				const disposeMount = await ctx.remote.$mount({ package: "manju-flow", descriptors: DESCRIPTORS });
 				ctx.effect(() => disposeMount);
-				api = ctx.remote.manjuConsole;
+				// namespace 服务在 $mount 后以 "remote.manjuConsole" 挂到 ctx（Cordis 点路径服务）
+				// ★ 用 ctx.get 惰性取——不能 inject（inject 会等待阻塞）；不能 ctx.remote.<ns>
+				//   直接访问（守卫拦截）。
+				api = ctx.get("remote.manjuConsole");
 			} catch (e) {
 				mountError = String((e && e.message) || e);
 				console.error("[manju-flow] Remote $mount failed（按钮仍注册，面板降级）:", e);
