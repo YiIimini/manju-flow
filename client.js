@@ -9,6 +9,7 @@ window.__ModuleLoader__.load({
 		var exports = module.exports;
 		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 		var React = require("react");
+		var ReactDOM = require("react-dom");
 
 		// ── Remote 装配描述（与 index.js M4 INVOCATIONS 一致）──────────────────
 		const PARAM_ARGS = [{ name: "args", wire: "args", source: "json", codec: { mode: "src-json" } }];
@@ -454,14 +455,21 @@ window.__ModuleLoader__.load({
 			}
 
 			// ★ 按钮 + 面板：同一 React 组件，useState 控制开合（不依赖任何事件链）
+			// ★ 面板用 ReactDOM.createPortal 渲染到 document.body——避免 fixed 定位
+			//   被按钮 slot 容器（可能带 transform/overflow 约束）钳制导致面板塌成长条。
+			//   修复 2026-08-24：此前面板作组件子树渲染，fixed 失效 → 只显示标题条。
 			const ManjuButton = () => {
 				const [open, setOpen] = React.useState(false);
+				const panel = open ? ReactDOM.createPortal(
+					React.createElement(ConsolePanel, { api, ctx, onClose: () => setOpen(false) }),
+					document.body
+				) : null;
 				return React.createElement("div", { style: { position: "relative", display: "inline-flex", flex: "none", alignItems: "center" } },
 					React.createElement("button", {
 						onClick: () => setOpen(!open), title: "漫剧控制台",
 						style: { border: "none", background: "none", color: "inherit", cursor: "pointer", padding: "2px 6px", fontSize: 14, display: "inline-flex", alignItems: "center" }
 					}, "🎬"),
-					open ? React.createElement(ConsolePanel, { api, ctx, onClose: () => setOpen(false) }) : null,
+					panel,
 				);
 			};
 			slots.inject("conversation.input.right", () => slots.register(
