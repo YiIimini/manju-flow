@@ -48,7 +48,7 @@ window.__ModuleLoader__.load({
 			children);
 
 		// ── 主面板：6 标签管理台 ─────────────────────────────────────────────
-		function ConsolePanel({ api, ctx }) {
+		function ConsolePanel({ api, ctx, onClose }) {
 			const [state, setState] = React.useState({ platform: null, projects: [], project: "", status: null, busy: false, msg: "", tab: "总览", comfyInfo: null, env: null, plan: null });
 			const [create, setCreate] = React.useState({ open: false, name: "", novel: "", apiKey: "" });
 			const [configForm, setConfigForm] = React.useState({ style: "real", width: 768, height: 1344, fps: 24, steps: 20, turboSteps: 8, seed: 1688, fl2vaEndFrame: false });
@@ -408,7 +408,7 @@ window.__ModuleLoader__.load({
 					h("span", { style: { fontWeight: 600, fontSize: 14 } }, "🎬 漫剧控制台"),
 					h("span", { style: { display: "inline-block", width: 10, height: 10, borderRadius: "50%", background: comfyOnline ? "#3fb950" : "#f85149" } }, null),
 					h("span", { style: { fontSize: 11, color: "#888" } }, "自研引擎 · 零 NiliX"),
-					h("button", { style: { marginLeft: "auto", border: "none", background: "none", color: "#999", cursor: "pointer", fontSize: 14 }, onClick: () => { open = false; ctx.emit("manju.console.toggle") } }, "✕"),
+					h("button", { style: { marginLeft: "auto", border: "none", background: "none", color: "#999", cursor: "pointer", fontSize: 14 }, onClick: () => { if (typeof onClose === "function") onClose() } }, "✕"),
 				),
 				// 标签栏
 				h("div", { style: { display: "flex", gap: 2, marginBottom: 10, borderBottom: "1px solid #ffffff14", paddingBottom: 6 } },
@@ -426,6 +426,10 @@ window.__ModuleLoader__.load({
 			// ★ 按钮/面板注册不依赖 Remote $mount：即使 Host 侧 manjuConsole 未挂载，
 			//   按钮也必须出现（面板内对 Remote 调用做降级提示）。修复 2026-08-24：
 			//   此前 $mount 失败直接 return → 按钮永不注册 → 用户找不到入口。
+			// ★ 面板开合改用 React state（skill-picker 同款模式）：按钮组件内部
+			//   useState 管理 open，面板（position:fixed 浮层）作为组件子树渲染。
+			//   修复 2026-08-24：旧实现用闭包变量 open + ctx.emit("slots/change")
+			//   （正确事件名是 slots/changed）→ 事件链断裂 → 点击无反应。
 			const slots = ctx.get("slots");
 			if (slots === undefined) {
 				console.error("[manju-flow] slots 服务不可用，无法注册按钮");
@@ -449,24 +453,21 @@ window.__ModuleLoader__.load({
 				});
 			}
 
-			let open = false;
-			const toggle = () => { open = !open; ctx.emit("manju.console.toggle") };
-
-			// ★ 按钮：conversation.input.right（输入框右侧，与技能选择器并排；该 slot 确认存在）
-			//   sidebar.footer.action 不存在 → 之前按钮不显示
-			const ManjuButton = () => React.createElement("button", {
-				onClick: toggle, title: "漫剧控制台",
-				style: { border: "none", background: "none", color: "inherit", cursor: "pointer", padding: "2px 6px", fontSize: 14, display: "inline-flex", alignItems: "center" }
-			}, "🎬");
+			// ★ 按钮 + 面板：同一 React 组件，useState 控制开合（不依赖任何事件链）
+			const ManjuButton = () => {
+				const [open, setOpen] = React.useState(false);
+				return React.createElement("div", { style: { position: "relative", display: "inline-flex", flex: "none", alignItems: "center" } },
+					React.createElement("button", {
+						onClick: () => setOpen(!open), title: "漫剧控制台",
+						style: { border: "none", background: "none", color: "inherit", cursor: "pointer", padding: "2px 6px", fontSize: 14, display: "inline-flex", alignItems: "center" }
+					}, "🎬"),
+					open ? React.createElement(ConsolePanel, { api, ctx, onClose: () => setOpen(false) }) : null,
+				);
+			};
 			slots.inject("conversation.input.right", () => slots.register(
 				{ name: "conversation.input.right", id: "manju-console", order: 50, label: "漫剧控制台" },
 				ManjuButton
 			));
-			slots.inject("shell.overlay", () => slots.register(
-				{ name: "shell.overlay", id: "manju-console-panel", order: 10 },
-				() => (open ? React.createElement(ConsolePanel, { api, ctx }) : null),
-			));
-			ctx.on("manju.console.toggle", () => { try { ctx.emit("slots/change") } catch (e) { /* ignore */ } });
 		}
 
 		exports.apply = apply;
